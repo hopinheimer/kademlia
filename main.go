@@ -1,25 +1,54 @@
 package main
 
 import (
+	"flag"
 	"fmt"
-	"net/rpc"
+	"net"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
 )
 
 func main() {
-	node1 := NewKademlia(":8001")
-	node2 := NewKademlia(":8002")
+	bootnode := flag.Bool("bootnode", false, "initiate bootnode")
+	port := flag.Int("port", 8081, "server port")
 
-	var res bool
-	client, err := rpc.Dial("tcp", node1.node.Addr)
-	if err != nil {
-		fmt.Println("Error dialing:", err)
+	flag.Parse()
+	var srv *Server
+
+	if *bootnode {
+		fmt.Println("starting bootnode..... @port:", 8081)
+		srv = NewServer(net.IPv4(127, 0, 0, 1), int32(8081))
+	} else {
+		srv = NewServer(net.IPv4(127, 0, 0, 1), int32(*port))
+	}
+
+	node := &Node{
+		IP:   &srv.IP,
+		Port: int(srv.Port),
+	}
+	rt := NewRoutingTable()
+	node.rt = rt
+	node.ID = node.toKadID(string(time.Now().UnixNano()))
+	srv.LocalNode = node
+	if err := srv.run(); err != nil {
+		fmt.Printf("Error starting server: %v\n", err)
 		return
 	}
-	defer client.Close()
-	err = client.Call("Kademlia.Ping", &node2.node, &res)
-	if err != nil {
-		fmt.Println("Error calling Ping:", err)
-		return
+
+	if !*bootnode {
+		fmt.Println("connect with bootnode .... ")
+		srv.ConnectWithBootnode()
 	}
-	fmt.Println("Ping result:", res)
+
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+	<-sig
+
+	fmt.Println("graceful shutdown")
+	srv.quit = true
+	if srv.conn != nil {
+		srv.conn.Close()
+	}
 }
